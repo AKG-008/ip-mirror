@@ -5,6 +5,9 @@ on:
     - cron: '0 */1 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -14,15 +17,29 @@ jobs:
 
       - name: Fetch Latest all.txt
         run: |
-          # 增加 User-Agent 伪装与重试，确保获取完整内容
-          curl -sSL --retry 3 -A "Mozilla/5.0" "https://countrymerge.pages.dev/all.txt" -o all.txt
+          echo "=== 尝试从 GitHub 上游仓库直接拉取 ==="
           
-          # 校验拉取行数并在日志中打印
+          # 多源备选：优先拉取 GitHub 仓库源文件
+          SOURCES=(
+            "https://raw.githubusercontent.com/countrymerge/countrymerge.github.io/main/all.txt"
+            "https://raw.githubusercontent.com/countrymerge/countrymerge.github.io/master/all.txt"
+            "https://cdn.jsdelivr.net/gh/countrymerge/countrymerge.github.io@main/all.txt"
+            "https://countrymerge.pages.dev/all.txt"
+          )
+
+          for url in "${SOURCES[@]}"; do
+            echo "正在尝试请求: $url"
+            curl -sSL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$url" -o all.txt
+            LINE_COUNT=$(wc -l < all.txt)
+            if [ "$LINE_COUNT" -gt 10 ]; then
+              echo "✅ 成功从 $url 获取到数据，共 $LINE_COUNT 行！"
+              break
+            fi
+          done
+
           LINE_COUNT=$(wc -l < all.txt)
-          echo "成功拉取到的行数: $LINE_COUNT"
-          
-          if [ "$LINE_COUNT" -lt 10 ]; then
-            echo "错误：拉取到的内容行数异常，取消本次提交！"
+          if [ "$LINE_COUNT" -le 10 ]; then
+            echo "❌ 所有来源均拉取失败，请检查上游仓库路径！"
             exit 1
           fi
 
@@ -31,5 +48,10 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add all.txt
-          git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')" || exit 0
-          git push
+          if git diff --staged --quiet; then
+            echo "=== 内容无变化，跳过提交 ==="
+          else
+            echo "=== 检测到更新，开始提交并推送 ==="
+            git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')"
+            git push
+          fi
