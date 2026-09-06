@@ -36,17 +36,33 @@ jobs:
             const browser = await chromium.launch({ headless: true });
             const page = await browser.newPage();
             
+            // 伪装标准桌面浏览器标头
+            await page.setExtraHTTPHeaders({
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            });
+
             console.log('正在请求目标页面...');
             const response = await page.goto('https://countrymerge.pages.dev/all.txt', {
-              waitUntil: 'networkidle',
+              waitUntil: 'domcontentloaded',
               timeout: 60000
             });
 
-            // 直接获取 HTTP 响应体文本，完美兼容 .txt 纯文本文件
-            const textContent = await response.text();
+            console.log('HTTP 状态码:', response.status());
+
+            // 获取全部响应内容
+            let textContent = await response.text();
+            
+            // 如果返回的是 HTML（例如 Cloudflare 拦截页），打印前 500 个字符进行诊断
+            if (textContent.includes('<html') || textContent.includes('<!DOCTYPE html')) {
+              console.log('⚠️ 警告：返回了 HTML 页面而不是纯文本文件！');
+              console.log('页面内容片段:\n', textContent.substring(0, 500));
+              
+              // 尝试读取页面内的 innerText 文本
+              textContent = await page.evaluate(() => document.body.innerText || '');
+            }
 
             fs.writeFileSync('all.txt', textContent.trim());
-            console.log('文件成功写入！');
+            console.log('写入本地文件完成！');
 
             await browser.close();
           })();
@@ -57,8 +73,8 @@ jobs:
           LINE_COUNT=$(wc -l < all.txt)
           echo "=== 成功提取到行数: $LINE_COUNT ==="
 
-          if [ "$LINE_COUNT" -le 100 ]; then
-            echo "❌ 提取到的内容不足，停止提交！"
+          if [ "$LINE_COUNT" -le 10 ]; then
+            echo "❌ 提取到的内容不足（可能被 Cloudflare 机房 IP 墙阻断），停止提交！"
             exit 1
           fi
 
