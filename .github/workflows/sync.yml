@@ -2,7 +2,7 @@ name: Sync IP List
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 */1 * * *'
   workflow_dispatch:
 
 permissions:
@@ -28,14 +28,10 @@ jobs:
       - name: Fetch and Process IP List
         run: |
           node -e "
-          const { chromium } = require('playwright');
+          const { request } = require('playwright');
           const fs = require('fs');
 
           const TARGET_URL = 'https://countrymerge.pages.dev/all.txt';
-          const FALLBACK_URLS = [
-            'https://api.allorigins.win/raw?url=https://countrymerge.pages.dev/all.txt',
-            'https://corsproxy.io/?https://countrymerge.pages.dev/all.txt'
-          ];
 
           const USER_AGENTS = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -48,73 +44,65 @@ jobs:
           }
 
           (async () => {
-            const browser = await chromium.launch({ headless: true });
             let finalContent = '';
 
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              console.log(\`[直连尝试 \${attempt}/3] 正在请求 \${TARGET_URL}...\`);
-              const context = await browser.newContext({
-                userAgent: USER_AGENTS[attempt - 1],
-                extraHTTPHeaders: {
-                  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                  'Cache-Control': 'no-cache'
-                }
-              });
-              const page = await context.newPage();
-
+            for (let attempt = 1; attempt <= 4; attempt++) {
+              console.log(\`[请求尝试 \${attempt}/4] 正在获取 \${TARGET_URL}...\`);
+              
               try {
-                const response = await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 30000 });
-                if (response && response.status() === 200) {
-                  const text = await response.text();
-                  const lines = text.trim().split('\n').filter(l => l.trim().length > 0).length;
-                  console.log(\` -> 状态码: 200, 获取有效行数: \${lines}\`);
+                const apiContext = await request.newContext({
+                  extraHTTPHeaders: {
+                    'User-Agent': USER_AGENTS[(attempt - 1) % USER_AGENTS.length],
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Ch-Ua': '\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '\"Windows\"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1'
+                  }
+                });
 
-                  if (lines > 100) {
-                    finalContent = text.trim();
-                    await context.close();
+                const response = await apiContext.get(TARGET_URL, { timeout: 20000 });
+                
+                if (response.ok()) {
+                  const text = await response.text();
+                  // 过滤空行与可能的 HTML 标签行
+                  const validLines = text.split('\n').filter(l => {
+                    const trimmed = l.trim();
+                    return trimmed.length > 0 && !trimmed.startsWith('<') && !trimmed.includes('html');
+                  });
+
+                  console.log(\` -> 响应状态: \${response.status()}, 提取有效行数: \${validLines.length}\`);
+
+                  if (validLines.length > 100) {
+                    finalContent = validLines.join('\n');
+                    await apiContext.dispose();
                     break;
                   }
+                } else {
+                  console.log(\` -> HTTP 错误码: \${response.status()}\`);
                 }
+                await apiContext.dispose();
               } catch (err) {
                 console.log(\` -> 请求异常: \${err.message}\`);
               }
 
-              await context.close();
               const waitTime = Math.floor(Math.random() * 3000) + 2000;
               console.log(\` -> 等待 \${waitTime}ms 后重试...\`);
               await delay(waitTime);
             }
 
-            if (!finalContent) {
-              console.log('⚠️ 直连提取失败，启动代理降级通道...');
-              const page = await browser.newPage();
-              for (const fallbackUrl of FALLBACK_URLS) {
-                console.log(\`[中转尝试] 请求: \${fallbackUrl}\`);
-                try {
-                  const res = await page.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                  if (res && res.status() === 200) {
-                    const text = await res.text();
-                    const lines = text.trim().split('\n').filter(l => l.trim().length > 0).length;
-                    console.log(\` -> 中转成功，行数: \${lines}\`);
-                    if (lines > 100) {
-                      finalContent = text.trim();
-                      break;
-                    }
-                  }
-                } catch (e) {
-                  console.log(\` -> 中转失败: \${e.message}\`);
-                }
-              }
-            }
-
-            await browser.close();
-
             if (finalContent) {
               fs.writeFileSync('all.txt', finalContent);
               const lineCount = finalContent.split('\n').length;
-              console.log(\`✅ 成功抓取最新数据并更新文件，共 \${lineCount} 行！\`);
+              console.log(\`✅ 成功抓取最新数据并写入 all.txt，共 \${lineCount} 行！\`);
             } else {
-              console.log('❌ 本次拉取全部失败，保留仓库原有历史 all.txt！');
+              console.log('❌ 本次拉取未能通过验证，安全保留仓库原有历史 all.txt！');
             }
           })();
           "
