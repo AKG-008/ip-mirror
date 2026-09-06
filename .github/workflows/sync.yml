@@ -2,8 +2,8 @@ name: Sync IP List
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+    - cron: '0 */2 * * *'  # 每 2 小时自动同步一次
+  workflow_dispatch:        # 支持手动一键触发
 
 permissions:
   contents: write
@@ -15,118 +15,66 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Playwright & Chromium
-        run: |
-          npm install playwright
-          npx playwright install chromium --with-deps
-
-      - name: Fetch and Process IP List
+      - name: Fetch and Update IP List
         run: |
           node -e "
-          const { request, chromium } = require('playwright');
           const fs = require('fs');
 
-          // 核心抓取源列表（含中转代理服务，绕过 Cloudflare 对 GH 机房 IP 的风控）
-          const SOURCES = [
-            'https://corsproxy.io/?https://countrymerge.pages.dev/all.txt',
-            'https://api.allorigins.win/raw?url=https://countrymerge.pages.dev/all.txt',
+          // 配置目标源列表（支持多源备用）
+          const TARGET_URLS = [
             'https://countrymerge.pages.dev/all.txt'
           ];
 
-          async function delay(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
-          }
-
           (async () => {
-            let finalContent = '';
+            let fetchedContent = '';
 
-            // 1. 尝试使用 API Request 快速抓取
-            for (let i = 0; i < SOURCES.length; i++) {
-              const url = SOURCES[i];
-              console.log(\`[通道 \${i + 1}/\${SOURCES.length}] 正在尝试 API 请求: \${url}\`);
-
+            for (const url of TARGET_URLS) {
+              console.log(\`正在尝试拉取数据: \${url}...\`);
               try {
-                const apiContext = await request.newContext({
-                  extraHTTPHeaders: {
+                const res = await fetch(url, {
+                  headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
                     'Cache-Control': 'no-cache'
                   }
                 });
 
-                const response = await apiContext.get(url, { timeout: 25000 });
-                if (response.ok()) {
-                  const text = await response.text();
-                  const lines = text.split('\n').filter(l => {
-                    const trimmed = l.trim();
-                    return trimmed.length > 0 && !trimmed.startsWith('<') && !trimmed.includes('html');
-                  });
-
-                  console.log(\` -> 状态码: \${response.status()}, 成功提取有效行数: \${lines.length}\`);
+                if (res.ok) {
+                  const text = await res.text();
+                  // 过滤空行、回车以及可能误抓到的 HTML 异常页面
+                  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0 && !l.includes('<html'));
+                  
+                  console.log(\` -> HTTP 状态码: \${res.status}, 提取到有效数据行数: \${lines.length}\`);
 
                   if (lines.length > 100) {
-                    finalContent = lines.join('\n');
-                    await apiContext.dispose();
-                    break;
+                    fetchedContent = lines.join('\n');
+                    break; // 成功获取到足够的 IP 数据，退出循环
+                  } else {
+                    console.log('⚠️ 有效行数不足 100 行，跳过此源');
                   }
                 } else {
-                  console.log(\` -> HTTP 状态码: \${response.status()}\`);
+                  console.log(\`❌ HTTP 请求返回异常状态码: \${res.status}\`);
                 }
-                await apiContext.dispose();
               } catch (err) {
-                console.log(\` -> 通道异常: \${err.message}\`);
+                console.log(\`❌ 网络请求异常: \${err.message}\`);
               }
-
-              await delay(2000);
             }
 
-            // 2. 如果 API 请求全过不去，降级使用 Chromium 浏览器渲染解析
-            if (!finalContent) {
-              console.log('⚠️ API 通道受限，降级启动 Headless Chromium 渲染模式...');
-              const browser = await chromium.launch({ headless: true });
-              const page = await browser.newPage();
-
-              for (const url of SOURCES) {
-                console.log(\`[Browser 模式] 正在访问: \${url}\`);
-                try {
-                  const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                  if (res && res.status() === 200) {
-                    const text = await page.evaluate(() => document.body.innerText || '');
-                    const lines = text.split('\n').filter(l => l.trim().length > 0 && !l.includes('<!DOCTYPE'));
-                    console.log(\` -> 提取到行数: \${lines.length}\`);
-                    if (lines.length > 100) {
-                      finalContent = lines.join('\n');
-                      break;
-                    }
-                  }
-                } catch (e) {
-                  console.log(\` -> 浏览器提取失败: \${e.message}\`);
-                }
-              }
-              await browser.close();
-            }
-
-            // 3. 结果写入
-            if (finalContent) {
-              fs.writeFileSync('all.txt', finalContent);
-              const lineCount = finalContent.split('\n').length;
-              console.log(\`✅ 抓取成功！已将最新数据写入 all.txt，共 \${lineCount} 行。\`);
+            // 安全写入逻辑：只有拿到有效数据才覆盖，防止清空历史数据
+            if (fetchedContent) {
+              fs.writeFileSync('all.txt', fetchedContent);
+              console.log('✅ 数据校验通过，已成功更新本地 all.txt！');
             } else {
-              console.log('❌ 节点安全隔离，安全保留仓库原有历史 all.txt！');
+              console.log('⚠️ 未能从任何数据源获取到有效 IP，保留仓库历史全量数据。');
             }
           })();
           "
 
+          # 校验最终文件行数并打印状态
           LINE_COUNT=$(wc -l < all.txt 2>/dev/null || echo 0)
-          echo "=== 最终仓库 all.txt 行数: $LINE_COUNT ==="
+          echo "=== 当前仓库 all.txt 最终有效行数: $LINE_COUNT ==="
 
           if [ "$LINE_COUNT" -le 10 ]; then
-            echo "❌ 文件依然为空，终止执行！"
+            echo "❌ 文件依然为空或内容异常，终止执行！"
             exit 1
           fi
 
@@ -137,9 +85,9 @@ jobs:
           git add all.txt
 
           if git diff --staged --quiet; then
-            echo "=== 内容无变化或无更新，跳过提交 ==="
+            echo "=== 数据无变化，跳过提交 ==="
           else
-            echo "=== 检测到内容变更，提交新版本 ==="
+            echo "=== 检测到 IP 数据变更，正在提交新版本 ==="
             git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')"
             git push
           fi
