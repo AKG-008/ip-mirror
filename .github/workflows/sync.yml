@@ -2,9 +2,8 @@ name: Sync IP List
 
 on:
   schedule:
-    # 每 6 小时自动同步一次
     - cron: '0 */1 * * *'
-  workflow_dispatch: # 允许手动点按钮立即触发
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -15,12 +14,22 @@ jobs:
 
       - name: Fetch Latest all.txt
         run: |
-          # GitHub 境外节点直接拉取源站
-          curl -sSL https://countrymerge.pages.dev/all.txt -o all.txt
+          # 增加 User-Agent 伪装与重试，确保获取完整内容
+          curl -sSL --retry 3 -A "Mozilla/5.0" "https://countrymerge.pages.dev/all.txt" -o all.txt
+          
+          # 校验拉取行数并在日志中打印
+          LINE_COUNT=$(wc -l < all.txt)
+          echo "成功拉取到的行数: $LINE_COUNT"
+          
+          if [ "$LINE_COUNT" -lt 10 ]; then
+            echo "错误：拉取到的内容行数异常，取消本次提交！"
+            exit 1
+          fi
 
       - name: Commit and Push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add all.txt
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')" && git push)
+          git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')" || exit 0
+          git push
