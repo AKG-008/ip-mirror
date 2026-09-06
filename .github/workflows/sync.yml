@@ -2,8 +2,8 @@ name: Sync IP List
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # 每 2 小时自动同步一次
-  workflow_dispatch:        # 支持手动一键触发
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,16 +20,19 @@ jobs:
           node -e "
           const fs = require('fs');
 
-          // 配置目标源列表（支持多源备用）
-          const TARGET_URLS = [
+          // 配置多个备用获取通道（包含公共代理与直连）
+          const SOURCES = [
+            'https://api.allorigins.win/raw?url=https://countrymerge.pages.dev/all.txt',
+            'https://corsproxy.io/?https://countrymerge.pages.dev/all.txt',
+            'https://raw.githubusercontent.com/xinyitang3/cfnb/main/all.txt',
             'https://countrymerge.pages.dev/all.txt'
           ];
 
           (async () => {
             let fetchedContent = '';
 
-            for (const url of TARGET_URLS) {
-              console.log(\`正在尝试拉取数据: \${url}...\`);
+            for (const url of SOURCES) {
+              console.log(\`正在尝试从数据通道拉取: \${url}...\`);
               try {
                 const res = await fetch(url, {
                   headers: {
@@ -40,41 +43,41 @@ jobs:
 
                 if (res.ok) {
                   const text = await res.text();
-                  // 过滤空行、回车以及可能误抓到的 HTML 异常页面
-                  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0 && !l.includes('<html'));
+                  // 过滤空行、HTML 标签（防 5 秒盾等错误页面）
+                  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0 && !l.includes('<html') && !l.includes('<!DOCTYPE'));
                   
                   console.log(\` -> HTTP 状态码: \${res.status}, 提取到有效数据行数: \${lines.length}\`);
 
-                  if (lines.length > 100) {
+                  if (lines.length > 500) {
                     fetchedContent = lines.join('\n');
-                    break; // 成功获取到足够的 IP 数据，退出循环
+                    console.log('✅ 成功通过该通道拉取到完整数据！');
+                    break; // 只要任意一个通道拿到有效 IP，立即退出循环
                   } else {
-                    console.log('⚠️ 有效行数不足 100 行，跳过此源');
+                    console.log('⚠️ 提取行数不足 500 行（可能遭遇验证页拦截），尝试下一个通道...');
                   }
                 } else {
-                  console.log(\`❌ HTTP 请求返回异常状态码: \${res.status}\`);
+                  console.log(\`❌ 通道返回异常状态码: \${res.status}\`);
                 }
               } catch (err) {
-                console.log(\`❌ 网络请求异常: \${err.message}\`);
+                console.log(\`❌ 通道连接异常: \${err.message}\`);
               }
             }
 
-            // 安全写入逻辑：只有拿到有效数据才覆盖，防止清空历史数据
+            // 写入与熔断防护
             if (fetchedContent) {
               fs.writeFileSync('all.txt', fetchedContent);
               console.log('✅ 数据校验通过，已成功更新本地 all.txt！');
             } else {
-              console.log('⚠️ 未能从任何数据源获取到有效 IP，保留仓库历史全量数据。');
+              console.log('⚠️ 所有通道均未能绕过防护，保留仓库历史全量数据。');
             }
           })();
           "
 
-          # 校验最终文件行数并打印状态
           LINE_COUNT=$(wc -l < all.txt 2>/dev/null || echo 0)
           echo "=== 当前仓库 all.txt 最终有效行数: $LINE_COUNT ==="
 
           if [ "$LINE_COUNT" -le 10 ]; then
-            echo "❌ 文件依然为空或内容异常，终止执行！"
+            echo "❌ 文件依然为空，终止执行！"
             exit 1
           fi
 
