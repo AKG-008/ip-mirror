@@ -20,19 +20,18 @@ jobs:
           node -e "
           const fs = require('fs');
 
-          // 配置多个备用获取通道（包含公共代理与直连）
+          // 使用高可用 CDN 镜像源及备用源（完美绕过 Cloudflare 对 GH 机房 IP 的拦截）
           const SOURCES = [
-            'https://api.allorigins.win/raw?url=https://countrymerge.pages.dev/all.txt',
-            'https://corsproxy.io/?https://countrymerge.pages.dev/all.txt',
-            'https://raw.githubusercontent.com/xinyitang3/cfnb/main/all.txt',
-            'https://countrymerge.pages.dev/all.txt'
+            'https://cdn.jsdelivr.net/gh/xinyitang3/cfnb@main/all.txt',
+            'https://raw.gitmirror.com/xinyitang3/cfnb/main/all.txt',
+            'https://fastly.jsdelivr.net/gh/xinyitang3/cfnb@main/all.txt'
           ];
 
           (async () => {
             let fetchedContent = '';
 
             for (const url of SOURCES) {
-              console.log(\`正在尝试从数据通道拉取: \${url}...\`);
+              console.log(\`正在尝试从 CDN 镜像拉取: \${url}...\`);
               try {
                 const res = await fetch(url, {
                   headers: {
@@ -43,32 +42,32 @@ jobs:
 
                 if (res.ok) {
                   const text = await res.text();
-                  // 过滤空行、HTML 标签（防 5 秒盾等错误页面）
+                  // 过滤空行与 HTML 标签
                   const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0 && !l.includes('<html') && !l.includes('<!DOCTYPE'));
                   
-                  console.log(\` -> HTTP 状态码: \${res.status}, 提取到有效数据行数: \${lines.length}\`);
+                  console.log(\` -> HTTP 状态码: \${res.status}, 成功提取有效数据行数: \${lines.length}\`);
 
-                  if (lines.length > 500) {
+                  if (lines.length > 100) {
                     fetchedContent = lines.join('\n');
-                    console.log('✅ 成功通过该通道拉取到完整数据！');
-                    break; // 只要任意一个通道拿到有效 IP，立即退出循环
+                    console.log('✅ 成功通过 CDN 通道拉取到完整数据！');
+                    break; 
                   } else {
-                    console.log('⚠️ 提取行数不足 500 行（可能遭遇验证页拦截），尝试下一个通道...');
+                    console.log('⚠️ 提取行数不足 100 行，尝试下一个镜像...');
                   }
                 } else {
-                  console.log(\`❌ 通道返回异常状态码: \${res.status}\`);
+                  console.log(\`❌ 镜像返回异常状态码: \${res.status}\`);
                 }
               } catch (err) {
-                console.log(\`❌ 通道连接异常: \${err.message}\`);
+                console.log(\`❌ 请求异常: \${err.message}\`);
               }
             }
 
-            // 写入与熔断防护
+            // 写入与安全熔断
             if (fetchedContent) {
               fs.writeFileSync('all.txt', fetchedContent);
-              console.log('✅ 数据校验通过，已成功更新本地 all.txt！');
+              console.log('✅ 数据校验通过，已成功写入 all.txt！');
             } else {
-              console.log('⚠️ 所有通道均未能绕过防护，保留仓库历史全量数据。');
+              console.log('⚠️ 所有 CDN 镜像均未获取到有效数据，保留本地历史文件。');
             }
           })();
           "
