@@ -1,103 +1,50 @@
-name: Sync IP List
+name: Sync IP Mirror
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    # 每 6 小时自动运行一次 (可根据需要调整)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # 支持手动触发
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch and Update IP List
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # 如果选用 方案A (Axios)，只需 npm install axios
+      # 如果选用 方案B (Playwright)，取消下方 playwright 相关注释
+      - name: Install Dependencies
         run: |
-          node -e "
-          const fs = require('fs');
+          npm install axios
+          # 如果使用 Playwright，请解开下面两行的注释：
+          # npm install playwright
+          # npx playwright install --with-deps chromium
 
-          // 配置可穿透 Cloudflare WAF 的专有代理与源站通道
-          const TARGET_ORIGIN = 'https://countrymerge.pages.dev/all.txt';
-          const SOURCES = [
-            \`https://thingproxy.freeboard.io/fetch/\${TARGET_ORIGIN}\`,
-            \`https://api.codetabs.com/v1/proxy?quest=\${TARGET_ORIGIN}\`,
-            \`https://proxy.cors.sh/\${TARGET_ORIGIN}\`,
-            TARGET_ORIGIN
-          ];
+      - name: Run Fetch Script
+        env:
+          TARGET_URL: 'https://你的目标IP源地址.com' # 替换为实际目标 URL
+        run: node fetch.js
 
-          (async () => {
-            let fetchedContent = '';
-
-            for (const url of SOURCES) {
-              console.log(\`正在尝试请求数据通道: \${url}...\`);
-              try {
-                const res = await fetch(url, {
-                  headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                    'Accept': 'text/plain,text/html,*/*',
-                    'Cache-Control': 'no-cache'
-                  }
-                });
-
-                if (res.ok) {
-                  const text = await res.text();
-                  // 过滤空行、HTML 标签及 Cloudflare 校验提示文本
-                  const lines = text.split(/\r?\n/).filter(l => 
-                    l.trim().length > 0 && 
-                    !l.includes('<html') && 
-                    !l.includes('<!DOCTYPE') &&
-                    !l.includes('Just a moment')
-                  );
-                  
-                  console.log(\` -> HTTP 状态码: \${res.status}, 成功提取到有效 IP 行数: \${lines.length}\`);
-
-                  if (lines.length > 500) {
-                    fetchedContent = lines.join('\n');
-                    console.log('✅ 成功通过该通道突破 Cloudflare 拦截并抓取到完整 IP 列表！');
-                    break;
-                  } else {
-                    console.log('⚠️ 提取行数不足 500 行，尝试下一个通道...');
-                  }
-                } else {
-                  console.log(\`❌ 通道返回状态码: \${res.status}\`);
-                }
-              } catch (err) {
-                console.log(\`❌ 请求异常: \${err.message}\`);
-              }
-            }
-
-            // 写入与安全熔断机制
-            if (fetchedContent) {
-              fs.writeFileSync('all.txt', fetchedContent);
-              console.log('✅ 数据校验通过，已成功更新本地 all.txt！');
-            } else {
-              console.log('⚠️ 所有通道均未获取到有效数据，安全保留仓库历史全量数据。');
-            }
-          })();
-          "
-
-          LINE_COUNT=$(wc -l < all.txt 2>/dev/null || echo 0)
-          echo "=== 当前仓库 all.txt 最终有效行数: $LINE_COUNT ==="
-
-          if [ "$LINE_COUNT" -le 10 ]; then
-            echo "❌ 文件内容异常，终止执行！"
-            exit 1
-          fi
-
-      - name: Commit and Push
+      - name: Commit and Push if changed
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          
           git add all.txt
-
+          # 检查是否有文件改动，只有在 all.txt 发生变化时才提交
           if git diff --staged --quiet; then
-            echo "=== 数据无变化，跳过提交 ==="
+            echo "=== 内容无变化，跳过提交 ==="
           else
-            echo "=== 检测到 IP 数据变更，正在提交新版本 ==="
-            git commit -m "Auto update all.txt on $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "=== 检测到更新，开始提交并推送 ==="
+            git commit -m "Auto update all.txt on $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
             git push
           fi
