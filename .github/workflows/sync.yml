@@ -23,13 +23,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/fetch.js') }}
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json', '**/fetch.js') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
       - name: Install Dependencies
         run: |
           npm install playwright
+          # 如果缓存命中，则跳过下载浏览器组件
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
             npx playwright install --with-deps chromium
           else
@@ -45,66 +46,34 @@ jobs:
 
           const TARGET_URL = process.env.TARGET_URL;
 
-          async function runWithRetry(retries = 3) {
+          async function run() {
             console.log('正在启动 Chromium 浏览器...');
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             });
+            
+            const page = await context.newPage();
+            console.log('正在请求目标页面...');
 
-            for (let i = 1; i <= retries; i++) {
-              const page = await context.newPage();
-              console.log(`正在请求目标页面 (第 ${i}/${retries} 次尝试)...`);
-
-              try {
-                // 1. 发起请求并拿到网络 Response 对象（避开 DOM 渲染截断）
-                const response = await page.goto(TARGET_URL, { waitUntil: 'commit', timeout: 30000 });
-                console.log(`HTTP 状态码: ${response.status()}`);
-
-                if (!response.ok()) {
-                  throw new Error(`HTTP 状态码异常: ${response.status()}`);
-                }
-
-                // 2. 直接读取原始响应的 Body 文本
-                const content = await response.text();
-
-                // 3. 计算实际行数
-                const lines = content.split('\n').filter(line => line.trim() !== '').length;
-                console.log(`当前读取行数: ${lines}`);
-
-                // 4. 行数阀门保护：如果读到的行数小于 2000 行，视为渲染/传输未完成，触发重试
-                if (lines < 2000) {
-                  throw new Error(`行数异常（当前仅 ${lines} 行，低于安全阀门 2000 行）`);
-                }
-
-                // 5. 校验通过，写入文件
-                const outputPath = path.join(__dirname, 'all.txt');
-                fs.writeFileSync(outputPath, content, 'utf-8');
-                console.log('写入本地文件完成！');
-                console.log(`=== 成功提取到完整行数: ${lines} ===`);
-
-                await page.close();
-                await browser.close();
-                return;
-
-              } catch (err) {
-                console.error(`第 ${i} 次尝试失败: ${err.message}`);
-                await page.close();
-                if (i === retries) {
-                  await browser.close();
-                  throw err;
-                }
-                await new Promise(resolve => setTimeout(resolve, 3000));
-              }
-            }
-          }
-
-          async function run() {
             try {
-              await runWithRetry(3);
+              const response = await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 30000 });
+              console.log(`HTTP 状态码: ${response.status()}`);
+
+              const content = await page.evaluate(() => document.body.innerText);
+
+              const outputPath = path.join(__dirname, 'all.txt');
+              fs.writeFileSync(outputPath, content, 'utf-8');
+              console.log('写入本地文件完成！');
+
+              const lines = content.split('\n').filter(line => line.trim() !== '').length;
+              console.log(`=== 成功提取到行数: ${lines} ===`);
+
             } catch (err) {
-              console.error('抓取任务最终失败:', err.message);
+              console.error('抓取失败:', err.message);
               process.exit(1);
+            } finally {
+              await browser.close();
             }
           }
 
@@ -113,7 +82,7 @@ jobs:
 
       - name: Run Fetch Script
         env:
-          TARGET_URL: 'https://countrymerge.pages.dev/all.txt'
+          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 替换为真实 IP 源地址
         run: node fetch.js
 
       - name: Commit and Push if changed
