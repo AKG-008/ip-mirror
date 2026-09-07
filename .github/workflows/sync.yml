@@ -17,6 +17,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'npm' # 自动缓存 node_modules / npm cache
 
       - name: Cache Playwright Browsers
         id: playwright-cache
@@ -29,8 +30,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          npm install playwright
-          # 如果缓存命中，则跳过下载浏览器组件
+          npm ci || npm install
           if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
             npx playwright install --with-deps chromium
           else
@@ -82,7 +82,7 @@ jobs:
 
       - name: Run Fetch Script
         env:
-          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 替换为真实 IP 源地址
+          TARGET_URL: 'https://你的目标IP源地址.com' # ⚠️ 替换为真实 IP 源地址
         run: node fetch.js
 
       - name: Commit and Push if changed
