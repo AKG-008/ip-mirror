@@ -18,62 +18,45 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Cache Playwright Browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json', '**/fetch.js') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install Dependencies
-        run: |
-          npm install playwright
-          # 如果缓存命中，则跳过下载浏览器组件
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-            npx playwright install --with-deps chromium
-          else
-            echo "=== 已命中使用 Playwright 浏览器缓存，跳过下载 ==="
-          fi
-
       - name: Create Fetch Script
         run: |
           cat << 'EOF' > fetch.js
-          const { chromium } = require('playwright');
           const fs = require('fs');
           const path = require('path');
 
           const TARGET_URL = process.env.TARGET_URL;
 
           async function run() {
-            console.log('正在启动 Chromium 浏览器...');
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-            });
-            
-            const page = await context.newPage();
-            console.log('正在请求目标页面...');
+            console.log('正在请求目标 IP 文本...');
 
             try {
-              const response = await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 30000 });
-              console.log(`HTTP 状态码: ${response.status()}`);
+              const response = await fetch(TARGET_URL, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+              });
 
-              const content = await page.evaluate(() => document.body.innerText);
+              console.log(`HTTP 状态码: ${response.status}`);
+              if (!response.ok) {
+                throw new Error(`HTTP 请求失败，状态码: ${response.status}`);
+              }
+
+              const content = await response.text();
+
+              // 校验抓取结果，防止空内容或严重截断覆盖原文件
+              const lines = content.split('\n').filter(line => line.trim() !== '').length;
+              if (lines < 100) {
+                throw new Error(`提取行数异常（仅 ${lines} 行），放弃写入以防止污染数据！`);
+              }
 
               const outputPath = path.join(__dirname, 'all.txt');
               fs.writeFileSync(outputPath, content, 'utf-8');
               console.log('写入本地文件完成！');
-
-              const lines = content.split('\n').filter(line => line.trim() !== '').length;
               console.log(`=== 成功提取到行数: ${lines} ===`);
 
             } catch (err) {
               console.error('抓取失败:', err.message);
               process.exit(1);
-            } finally {
-              await browser.close();
             }
           }
 
@@ -82,7 +65,7 @@ jobs:
 
       - name: Run Fetch Script
         env:
-          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 替换为真实 IP 源地址
+          TARGET_URL: 'https://countrymerge.pages.dev/all.txt'
         run: node fetch.js
 
       - name: Commit and Push if changed
