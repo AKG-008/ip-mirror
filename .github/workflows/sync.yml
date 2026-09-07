@@ -69,7 +69,7 @@ jobs:
 
       - name: Run Fetch Script
         env:
-          TARGET_URL: 'https://你的目标IP源地址.com' # ⚠️ 请在此处替换为你真实的 IP 源网址
+          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 请在此处替换为你真实的 IP 源网址
         run: node fetch.js
 
       - name: Commit and Push if changed
