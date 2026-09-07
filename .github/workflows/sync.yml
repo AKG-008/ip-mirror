@@ -26,36 +26,64 @@ jobs:
 
           const TARGET_URL = process.env.TARGET_URL;
 
-          async function run() {
-            console.log('正在请求目标 IP 文本...');
+          async function fetchWithRetry(url, retries = 3) {
+            for (let i = 1; i <= retries; i++) {
+              try {
+                console.log(`正在请求目标 IP 文本 (第 ${i}/${retries} 次尝试)...`);
+                
+                const response = await fetch(url, {
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    // 禁用压缩，防止 CDN 在流传输中断时导致文本截断
+                    'Accept-Encoding': 'identity',
+                    'Cache-Control': 'no-cache'
+                  }
+                });
 
-            try {
-              const response = await fetch(TARGET_URL, {
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                console.log(`HTTP 状态码: ${response.status}`);
+                if (!response.ok) {
+                  throw new Error(`HTTP 请求失败，状态码: ${response.status}`);
                 }
-              });
 
-              console.log(`HTTP 状态码: ${response.status}`);
-              if (!response.ok) {
-                throw new Error(`HTTP 请求失败，状态码: ${response.status}`);
+                // 转换 ArrayBuffer 避免字符集/流截断问题
+                const buffer = await response.arrayBuffer();
+                const content = new TextDecoder('utf-8').decode(buffer);
+
+                // 校验 Content-Length（如果源服务器提供了该 Header）
+                const contentLength = response.headers.get('content-length');
+                if (contentLength && buffer.byteLength < parseInt(contentLength, 10)) {
+                  throw new Error(`传输不完整: 预期 ${contentLength} 字节，实际接收 ${buffer.byteLength} 字节`);
+                }
+
+                // 按照换行符切分统计实际总行数（保留空行统计）
+                const totalLines = content.split('\n').length;
+                console.log(`=== 实际接收总行数: ${totalLines} ===`);
+
+                // 熔断校验：如果行数异常偏少，视为无效抓取，触发重试
+                if (totalLines < 2000) {
+                  throw new Error(`抓取行数异常（当前仅 ${totalLines} 行，少于安全阈值 2000 行）`);
+                }
+
+                return { content, totalLines };
+              } catch (err) {
+                console.error(`第 ${i} 次抓取失败: ${err.message}`);
+                if (i === retries) throw err;
+                // 延迟 2 秒后重试
+                await new Promise(resolve => setTimeout(resolve, 2000));
               }
+            }
+          }
 
-              const content = await response.text();
-
-              // 校验抓取结果，防止空内容或严重截断覆盖原文件
-              const lines = content.split('\n').filter(line => line.trim() !== '').length;
-              if (lines < 100) {
-                throw new Error(`提取行数异常（仅 ${lines} 行），放弃写入以防止污染数据！`);
-              }
+          async function run() {
+            try {
+              const { content, totalLines } = await fetchWithRetry(TARGET_URL);
 
               const outputPath = path.join(__dirname, 'all.txt');
               fs.writeFileSync(outputPath, content, 'utf-8');
-              console.log('写入本地文件完成！');
-              console.log(`=== 成功提取到行数: ${lines} ===`);
+              console.log(`写入本地文件完成！成功同步 ${totalLines} 行。`);
 
             } catch (err) {
-              console.error('抓取失败:', err.message);
+              console.error('抓取任务最终失败:', err.message);
               process.exit(1);
             }
           }
