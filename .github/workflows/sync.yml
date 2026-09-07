@@ -2,8 +2,9 @@ name: Sync IP Mirror
 
 on:
   schedule:
+    # 每 6 小时自动运行一次
     - cron: '0 */2 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 支持手动触发
 
 jobs:
   sync:
@@ -18,24 +19,10 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Cache Playwright Browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json', '**/fetch.js') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
       - name: Install Dependencies
         run: |
           npm install playwright
-          # 如果缓存命中，则跳过下载浏览器组件
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-            npx playwright install --with-deps chromium
-          else
-            echo "=== 已命中使用 Playwright 浏览器缓存，跳过下载 ==="
-          fi
+          npx playwright install --with-deps chromium
 
       - name: Create Fetch Script
         run: |
@@ -82,7 +69,7 @@ jobs:
 
       - name: Run Fetch Script
         env:
-          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 替换为真实 IP 源地址
+          TARGET_URL: 'https://countrymerge.pages.dev/all.txt' # ⚠️ 请在此处替换为你真实的 IP 源网址
         run: node fetch.js
 
       - name: Commit and Push if changed
